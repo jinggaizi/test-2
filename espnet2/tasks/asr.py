@@ -15,14 +15,33 @@ from typeguard import check_return_type
 from espnet2.asr.ctc import CTC
 from espnet2.asr.decoder.abs_decoder import AbsDecoder
 from espnet2.asr.decoder.rnn_decoder import RNNDecoder
+from espnet2.asr.decoder.transformer_decoder import (
+    DynamicConvolution2DTransformerDecoder,  # noqa: H301
+)
+from espnet2.asr.decoder.transformer_decoder import DynamicConvolutionTransformerDecoder
+from espnet2.asr.decoder.transformer_decoder import (
+    LightweightConvolution2DTransformerDecoder,  # noqa: H301
+)
+from espnet2.asr.decoder.transformer_decoder import (
+    LightweightConvolutionTransformerDecoder,  # noqa: H301
+)
 from espnet2.asr.decoder.transformer_decoder import TransformerDecoder
 from espnet2.asr.encoder.abs_encoder import AbsEncoder
+from espnet2.asr.encoder.conformer_encoder import ConformerEncoder
 from espnet2.asr.encoder.rnn_encoder import RNNEncoder
+from espnet2.asr.encoder.conformer_streaming_encoder import ConformerStreamingEncoder
+from espnet2.asr.encoder.conformer_streaming_encoder_dynamic_u2 import ConformerStreamingU2Encoder
+from espnet2.asr.encoder.conformer_streaming_cascaded_encoder import ConformerStreamingCascadedEncoder
+from espnet2.asr.encoder.conformer_streaming_cascaded_encoder_dynamic_u2 import ConformerStreamingCascadedU2Encoder
+from espnet2.asr.encoder.conformer_mask_encoder import ConformerMaskEncoder
 from espnet2.asr.encoder.transformer_encoder import TransformerEncoder
 from espnet2.asr.encoder.vgg_rnn_encoder import VGGRNNEncoder
 from espnet2.asr.espnet_model import ESPnetASRModel
 from espnet2.asr.frontend.abs_frontend import AbsFrontend
 from espnet2.asr.frontend.default import DefaultFrontend
+from espnet2.asr.frontend.windowing import SlidingWindow
+from espnet2.asr.preencoder.abs_preencoder import AbsPreEncoder
+from espnet2.asr.preencoder.sinc import LightweightSincConvs
 from espnet2.asr.specaug.abs_specaug import AbsSpecAug
 from espnet2.asr.specaug.specaug import SpecAug
 from espnet2.layers.abs_normalize import AbsNormalize
@@ -36,13 +55,17 @@ from espnet2.train.preprocessor import CommonPreprocessor
 from espnet2.train.trainer import Trainer
 from espnet2.utils.get_default_kwargs import get_default_kwargs
 from espnet2.utils.nested_dict_action import NestedDictAction
+from espnet2.utils.types import float_or_none
 from espnet2.utils.types import int_or_none
 from espnet2.utils.types import str2bool
 from espnet2.utils.types import str_or_none
+from espnet2.asr.rnnt_decoder.abs_rnnt_decoder import AbsRNNTDecoder
+from espnet2.asr.rnnt_decoder.transducer_transformer_decoder import TransducerTransformerDecoder
+from espnet2.asr.rnnt_decoder.transducer_rnn_decoder import TransducerRNNDecoder
 
 frontend_choices = ClassChoices(
     name="frontend",
-    classes=dict(default=DefaultFrontend),
+    classes=dict(default=DefaultFrontend, sliding_window=SlidingWindow),
     type_check=AbsFrontend,
     default="default",
 )
@@ -55,26 +78,62 @@ specaug_choices = ClassChoices(
 )
 normalize_choices = ClassChoices(
     "normalize",
-    classes=dict(global_mvn=GlobalMVN, utterance_mvn=UtteranceMVN,),
+    classes=dict(
+        global_mvn=GlobalMVN,
+        utterance_mvn=UtteranceMVN,
+    ),
     type_check=AbsNormalize,
-    default="utterance_mvn",
+    default=None,
+    optional=True,
+)
+preencoder_choices = ClassChoices(
+    name="preencoder",
+    classes=dict(
+        sinc=LightweightSincConvs,
+    ),
+    type_check=AbsPreEncoder,
+    default=None,
     optional=True,
 )
 encoder_choices = ClassChoices(
     "encoder",
     classes=dict(
-        transformer=TransformerEncoder, vgg_rnn=VGGRNNEncoder, rnn=RNNEncoder,
+        conformer=ConformerEncoder,
+        transformer=TransformerEncoder,
+        vgg_rnn=VGGRNNEncoder,
+        rnn=RNNEncoder,
+        mask_conformer=ConformerMaskEncoder,
+        conformer_sx=ConformerStreamingEncoder,
+        conformer_sx_u2=ConformerStreamingU2Encoder,
+        conformer_sx_cascaded=ConformerStreamingCascadedEncoder,
+        conformer_sx_cascaded_u2=ConformerStreamingCascadedU2Encoder,
     ),
     type_check=AbsEncoder,
     default="rnn",
 )
 decoder_choices = ClassChoices(
     "decoder",
-    classes=dict(transformer=TransformerDecoder, rnn=RNNDecoder),
+    classes=dict(
+        transformer=TransformerDecoder,
+        lightweight_conv=LightweightConvolutionTransformerDecoder,
+        lightweight_conv2d=LightweightConvolution2DTransformerDecoder,
+        dynamic_conv=DynamicConvolutionTransformerDecoder,
+        dynamic_conv2d=DynamicConvolution2DTransformerDecoder,
+        rnn=RNNDecoder,
+    ),
     type_check=AbsDecoder,
     default="rnn",
 )
-
+rnnt_decoder_choices = ClassChoices(
+    "rnnt_decoder",
+    classes=dict(
+        transducer_transformer=TransducerTransformerDecoder,
+        transducer_rnn=TransducerRNNDecoder,
+    ),
+    type_check=AbsRNNTDecoder,
+    default=None,
+    optional=True,
+)
 
 class ASRTask(AbsTask):
     # If you need more than one optimizers, change this value
@@ -88,10 +147,14 @@ class ASRTask(AbsTask):
         specaug_choices,
         # --normalize and --normalize_conf
         normalize_choices,
+        # --preencoder and --preencoder_conf
+        preencoder_choices,        
         # --encoder and --encoder_conf
         encoder_choices,
         # --decoder and --decoder_conf
         decoder_choices,
+        # --rnnt_decoder and --rnnt_decoder_conf
+        rnnt_decoder_choices,
     ]
 
     # If you need to modify train() or eval() procedures, change Trainer class here
@@ -186,6 +249,42 @@ class ASRTask(AbsTask):
             default=None,
             help="Specify g2p method if --token_type=phn",
         )
+        parser.add_argument(
+            "--speech_volume_normalize",
+            type=float_or_none,
+            default=None,
+            help="Scale the maximum amplitude to the given value.",
+        )
+        parser.add_argument(
+            "--rir_scp",
+            type=str_or_none,
+            default=None,
+            help="The file path of rir scp file.",
+        )
+        parser.add_argument(
+            "--rir_apply_prob",
+            type=float,
+            default=1.0,
+            help="THe probability for applying RIR convolution.",
+        )
+        parser.add_argument(
+            "--noise_scp",
+            type=str_or_none,
+            default=None,
+            help="The file path of noise scp file.",
+        )
+        parser.add_argument(
+            "--noise_apply_prob",
+            type=float,
+            default=1.0,
+            help="The probability applying Noise adding.",
+        )
+        parser.add_argument(
+            "--noise_db_range",
+            type=str,
+            default="13_15",
+            help="The range of noise decibel level.",
+        )
 
         for class_choices in cls.class_choices_list:
             # Append --<name> and --<name>_conf.
@@ -194,7 +293,7 @@ class ASRTask(AbsTask):
 
     @classmethod
     def build_collate_fn(
-        cls, args: argparse.Namespace
+        cls, args: argparse.Namespace, train: bool
     ) -> Callable[
         [Collection[Tuple[str, Dict[str, np.ndarray]]]],
         Tuple[List[str], Dict[str, torch.Tensor]],
@@ -217,6 +316,21 @@ class ASRTask(AbsTask):
                 non_linguistic_symbols=args.non_linguistic_symbols,
                 text_cleaner=args.cleaner,
                 g2p_type=args.g2p,
+                # NOTE(kamo): Check attribute existence for backward compatibility
+                rir_scp=args.rir_scp if hasattr(args, "rir_scp") else None,
+                rir_apply_prob=args.rir_apply_prob
+                if hasattr(args, "rir_apply_prob")
+                else 1.0,
+                noise_scp=args.noise_scp if hasattr(args, "noise_scp") else None,
+                noise_apply_prob=args.noise_apply_prob
+                if hasattr(args, "noise_apply_prob")
+                else 1.0,
+                noise_db_range=args.noise_db_range
+                if hasattr(args, "noise_db_range")
+                else "13_15",
+                speech_volume_normalize=args.speech_volume_normalize
+                if hasattr(args, "rir_scp")
+                else None,
             )
         else:
             retval = None
@@ -224,7 +338,9 @@ class ASRTask(AbsTask):
         return retval
 
     @classmethod
-    def required_data_names(cls, inference: bool = False) -> Tuple[str, ...]:
+    def required_data_names(
+        cls, train: bool = True, inference: bool = False
+    ) -> Tuple[str, ...]:
         if not inference:
             retval = ("speech", "text")
         else:
@@ -233,7 +349,9 @@ class ASRTask(AbsTask):
         return retval
 
     @classmethod
-    def optional_data_names(cls, inference: bool = False) -> Tuple[str, ...]:
+    def optional_data_names(
+        cls, train: bool = True, inference: bool = False
+    ) -> Tuple[str, ...]:
         retval = ()
         assert check_return_type(retval)
         return retval
@@ -280,34 +398,53 @@ class ASRTask(AbsTask):
             normalize = normalize_class(**args.normalize_conf)
         else:
             normalize = None
+        
+        # 4. Pre-encoder input block
+        # NOTE(kan-bayashi): Use getattr to keep the compatibility
+        if getattr(args, "preencoder", None) is not None:
+            preencoder_class = preencoder_choices.get_class(args.preencoder)
+            preencoder = preencoder_class(**args.preencoder_conf)
+            input_size = preencoder.output_size()
+        else:
+            preencoder = None
 
-        # 4. Encoder
+        # 5. Encoder
         encoder_class = encoder_choices.get_class(args.encoder)
         encoder = encoder_class(input_size=input_size, **args.encoder_conf)
 
-        # 5. Decoder
+        # 6. Decoder
+        decoder = None
+        
         decoder_class = decoder_choices.get_class(args.decoder)
+        if args.rnnt_decoder is  None:
+            decoder = decoder_class(
+                vocab_size=vocab_size,
+                encoder_output_size=encoder.output_size(),
+                **args.decoder_conf,
+            )
 
-        decoder = decoder_class(
-            vocab_size=vocab_size,
-            encoder_output_size=encoder.output_size(),
-            **args.decoder_conf,
-        )
-
-        # 6. CTC
+        # 7. CTC
         ctc = CTC(
             odim=vocab_size, encoder_output_sizse=encoder.output_size(), **args.ctc_conf
         )
 
-        # 7. RNN-T Decoder (Not implemented)
+        # 8. RNN-T Decoder (Not implemented)
         rnnt_decoder = None
+        if args.rnnt_decoder is not None:
+            rnnt_decoder_class = rnnt_decoder_choices.get_class(args.rnnt_decoder)
+            rnnt_decoder = rnnt_decoder_class(
+                vocab_size=vocab_size,
+                encoder_output_size=encoder.output_size(),
+                **args.rnnt_decoder_conf,
+            )
 
-        # 8. Build model
+        # 9. Build model
         model = ESPnetASRModel(
             vocab_size=vocab_size,
             frontend=frontend,
             specaug=specaug,
             normalize=normalize,
+            preencoder=preencoder,
             encoder=encoder,
             decoder=decoder,
             ctc=ctc,

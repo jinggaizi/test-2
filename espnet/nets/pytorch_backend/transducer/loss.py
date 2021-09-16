@@ -2,30 +2,44 @@
 
 """Transducer loss module."""
 
-from torch import nn
-
-from warprnnt_pytorch import RNNTLoss
+import torch
 
 
-class TransLoss(nn.Module):
-    """Transducer loss.
+class TransLoss(torch.nn.Module):
+    """Transducer loss module.
 
     Args:
         trans_type (str): type of transducer implementation to calculate loss.
         blank_id (int): blank symbol id
-
     """
 
-    def __init__(self, trans_type, blank_id):
+    def __init__(self, trans_type, lamb, blank_id):
         """Construct an TransLoss object."""
-        super(TransLoss, self).__init__()
+        super().__init__()
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         if trans_type == "warp-transducer":
-            self.trans_loss = RNNTLoss(blank=blank_id)
-        else:
-            raise NotImplementedError
+            from warprnnt_pytorch import RNNTLoss
 
+            self.trans_loss = RNNTLoss(blank=blank_id)
+        elif trans_type == "warp-rnnt":
+            if device.type == "cuda":
+                try:
+                    from warp_rnnt import rnnt_loss
+
+                    self.trans_loss = rnnt_loss
+                except ImportError:
+                    raise ImportError(
+                        "warp-rnnt is not installed. Please re-setup"
+                        " espnet or use 'warp-transducer'"
+                    )
+            else:
+                raise ValueError("warp-rnnt is not supported in CPU mode")
+
+        self.trans_type = trans_type
         self.blank_id = blank_id
+        self.lamb = lamb
 
     def forward(self, pred_pad, target, pred_len, target_len):
         """Compute path-aware regularization transducer loss.
@@ -41,6 +55,39 @@ class TransLoss(nn.Module):
             loss (torch.Tensor): transducer loss
 
         """
-        loss = self.trans_loss(pred_pad, target, pred_len, target_len)
+        dtype = pred_pad.dtype
+        if dtype != torch.float32:
+            # warp-transducer and warp-rnnt only support float32
+            pred_pad = pred_pad.to(dtype=torch.float32)
+        if self.trans_type == "warp-rnnt":
+            loss = torch.zeros(pred_pad.shape[0], device=pred_pad.device)
+            for i in range(pred_pad.shape[0]):
+                pred_pad_per_utt = pred_pad[i].unsqueeze(0)
+                log_probs = torch.log_softmax(pred_pad_per_utt, dim=-1)
+                loss[i] = self.trans_loss(
+                    log_probs,
+                    target[i].unsqueeze(0),
+                    pred_len[i],
+                    target_len[i],
+                    reduction="mean",
+                    lamb=self.lamb,
+                    blank=self.blank_id,
+                    gather=True,
+                )
+            loss = loss.mean()
 
+            # log_probs = torch.log_softmax(pred_pad, dim=-1)
+            # loss = self.trans_loss(
+            #     log_probs,
+            #     target,
+            #     pred_len,
+            #     target_len,
+            #     reduction="mean",
+            #     blank=self.blank_id,
+            #     gather=True,
+            # )
+        else:
+            loss = self.trans_loss(pred_pad, target, pred_len, target_len)
+        loss = loss.to(dtype=dtype)
+        
         return loss

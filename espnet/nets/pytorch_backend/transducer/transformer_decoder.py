@@ -13,6 +13,7 @@ from espnet.nets.pytorch_backend.transformer.attention import MultiHeadedAttenti
 from espnet.nets.pytorch_backend.transformer.embedding import PositionalEncoding
 from espnet.nets.pytorch_backend.transformer.layer_norm import LayerNorm
 from espnet.nets.pytorch_backend.transformer.mask import subsequent_mask
+from espnet.nets.pytorch_backend.transformer.mask import subsequent_mask_limit
 from espnet.nets.pytorch_backend.transformer.positionwise_feed_forward import (
     PositionwiseFeedForward,  # noqa: H301
 )
@@ -179,7 +180,7 @@ class Decoder(torch.nn.Module):
         """Get an initial state for decoding."""
         return [None for i in range(len(self.decoders))]
 
-    def recognize(self, h, recog_args):
+    def recognize(self, h, recog_args, target_left_mask=-1):
         """Greedy search implementation for transformer-transducer.
 
         Args:
@@ -193,7 +194,10 @@ class Decoder(torch.nn.Module):
         hyp = {"score": 0.0, "yseq": [self.blank]}
 
         ys = to_device(self, torch.tensor(hyp["yseq"], dtype=torch.long)).unsqueeze(0)
-        ys_mask = to_device(self, subsequent_mask(1).unsqueeze(0))
+        if target_left_mask > -1:
+            ys_mask = to_device(self, subsequent_mask_limit(1, target_left_mask).unsqueeze(0))
+        else:
+            ys_mask = to_device(self, subsequent_mask(1).unsqueeze(0))
         y, c = self.forward_one_step(ys, ys_mask, None)
 
         for i, hi in enumerate(h):
@@ -205,15 +209,20 @@ class Decoder(torch.nn.Module):
                 hyp["score"] += float(logp)
 
                 ys = to_device(self, torch.tensor(hyp["yseq"]).unsqueeze(0))
-                ys_mask = to_device(
-                    self, subsequent_mask(len(hyp["yseq"])).unsqueeze(0)
-                )
+                if target_left_mask > -1:
+                    ys_mask = to_device(
+                        self, subsequent_mask_limit(len(hyp["yseq"]), target_left_mask).unsqueeze(0)
+                    )
+                else:
+                    ys_mask = to_device(
+                        self, subsequent_mask(len(hyp["yseq"])).unsqueeze(0)
+                    )
 
                 y, c = self.forward_one_step(ys, ys_mask, c)
 
         return [hyp]
 
-    def recognize_beam(self, h, recog_args, rnnlm=None):
+    def recognize_beam(self, h, recog_args, rnnlm=None, target_left_mask=-1):
         """Beam search implementation for transformer-transducer.
 
         Args:
@@ -246,9 +255,14 @@ class Decoder(torch.nn.Module):
                 hyps.remove(new_hyp)
 
                 ys = to_device(self, torch.tensor(new_hyp["yseq"]).unsqueeze(0))
-                ys_mask = to_device(
-                    self, subsequent_mask(len(new_hyp["yseq"])).unsqueeze(0)
-                )
+                if target_left_mask > -1:
+                     ys_mask = to_device(
+                        self, subsequent_mask_limit(len(new_hyp["yseq"]), target_left_mask).unsqueeze(0)
+                    )
+                else:
+                    ys_mask = to_device(
+                        self, subsequent_mask(len(new_hyp["yseq"])).unsqueeze(0)
+                    )
                 y, c = self.forward_one_step(ys, ys_mask, new_hyp["cache"])
 
                 ytu = torch.log_softmax(self.joint(hi, y[0]), dim=0)

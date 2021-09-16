@@ -6,10 +6,10 @@
 
 """Training/decoding definition for the text translation task."""
 
+import itertools
 import json
 import logging
 import os
-import sys
 
 from chainer import training
 from chainer.training import extensions
@@ -21,13 +21,11 @@ from espnet.asr.asr_utils import adadelta_eps_decay
 from espnet.asr.asr_utils import adam_lr_decay
 from espnet.asr.asr_utils import add_results_to_json
 from espnet.asr.asr_utils import CompareValueTrigger
-from espnet.asr.asr_utils import get_model_conf
 from espnet.asr.asr_utils import restore_snapshot
 from espnet.asr.asr_utils import snapshot_object
 from espnet.asr.asr_utils import torch_load
 from espnet.asr.asr_utils import torch_resume
 from espnet.asr.asr_utils import torch_snapshot
-import espnet.lm.pytorch_backend.lm as lm_pytorch
 from espnet.nets.mt_interface import MTInterface
 from espnet.nets.pytorch_backend.e2e_asr import pad_list
 from espnet.utils.dataset import ChainerDataLoader
@@ -48,11 +46,6 @@ from espnet.asr.pytorch_backend.asr import load_trained_model
 import matplotlib
 
 matplotlib.use("Agg")
-
-if sys.version_info[0] == 2:
-    from itertools import izip_longest as zip_longest
-else:
-    from itertools import zip_longest as zip_longest
 
 
 class CustomConverter(object):
@@ -122,14 +115,6 @@ def train(args):
     model = model_class(idim, odim, args)
     assert isinstance(model, MTInterface)
 
-    if args.rnnlm is not None:
-        rnnlm_args = get_model_conf(args.rnnlm, args.rnnlm_conf)
-        rnnlm = lm_pytorch.ClassifierWithState(
-            lm_pytorch.RNNLM(len(args.char_list), rnnlm_args.layer, rnnlm_args.unit)
-        )
-        torch_load(args.rnnlm, rnnlm)
-        model.rnnlm = rnnlm
-
     # write model config
     if not os.path.exists(args.outdir):
         os.makedirs(args.outdir)
@@ -162,6 +147,16 @@ def train(args):
     else:
         dtype = torch.float32
     model = model.to(device=device, dtype=dtype)
+
+    logging.warning(
+        "num. model params: {:,} (num. trained: {:,} ({:.1f}%))".format(
+            sum(p.numel() for p in model.parameters()),
+            sum(p.numel() for p in model.parameters() if p.requires_grad),
+            sum(p.numel() for p in model.parameters() if p.requires_grad)
+            * 100.0
+            / sum(p.numel() for p in model.parameters()),
+        )
+    )
 
     # Setup an optimizer
     if args.opt == "adadelta":
@@ -523,30 +518,11 @@ def trans(args):
     assert isinstance(model, MTInterface)
     model.trans_args = args
 
-    # read rnnlm
-    if args.rnnlm:
-        rnnlm_args = get_model_conf(args.rnnlm, args.rnnlm_conf)
-        if getattr(rnnlm_args, "model_module", "default") != "default":
-            raise ValueError(
-                "use '--api v2' option to decode with non-default language model"
-            )
-        rnnlm = lm_pytorch.ClassifierWithState(
-            lm_pytorch.RNNLM(
-                len(train_args.char_list), rnnlm_args.layer, rnnlm_args.unit
-            )
-        )
-        torch_load(args.rnnlm, rnnlm)
-        rnnlm.eval()
-    else:
-        rnnlm = None
-
     # gpu
     if args.ngpu == 1:
         gpu_id = list(range(args.ngpu))
         logging.info("gpu id: " + str(gpu_id))
         model.cuda()
-        if rnnlm:
-            rnnlm.cuda()
 
     # read json data
     with open(args.trans_json, "rb") as f:
@@ -572,7 +548,7 @@ def trans(args):
             for idx, name in enumerate(js.keys(), 1):
                 logging.info("(%d/%d) decoding " + name, idx, len(js.keys()))
                 feat = [js[name]["output"][1]["tokenid"].split()]
-                nbest_hyps = model.translate(feat, args, train_args.char_list, rnnlm)
+                nbest_hyps = model.translate(feat, args, train_args.char_list)
                 new_js[name] = add_results_to_json(
                     js[name], nbest_hyps, train_args.char_list
                 )
@@ -581,7 +557,7 @@ def trans(args):
 
         def grouper(n, iterable, fillvalue=None):
             kargs = [iter(iterable)] * n
-            return zip_longest(*kargs, fillvalue=fillvalue)
+            return itertools.zip_longest(*kargs, fillvalue=fillvalue)
 
         # sort data
         keys = list(js.keys())
@@ -600,7 +576,9 @@ def trans(args):
                     for name in names
                 ]
                 nbest_hyps = model.translate_batch(
-                    feats, args, train_args.char_list, rnnlm=rnnlm
+                    feats,
+                    args,
+                    train_args.char_list,
                 )
 
                 for i, nbest_hyp in enumerate(nbest_hyps):

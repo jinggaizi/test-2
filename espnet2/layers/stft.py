@@ -19,7 +19,6 @@ class Stft(torch.nn.Module, InversibleInterface):
         hop_length: int = 128,
         window: Optional[str] = "hann",
         center: bool = True,
-        pad_mode: str = "reflect",
         normalized: bool = False,
         onesided: bool = True,
     ):
@@ -32,7 +31,6 @@ class Stft(torch.nn.Module, InversibleInterface):
             self.win_length = win_length
         self.hop_length = hop_length
         self.center = center
-        self.pad_mode = pad_mode
         self.normalized = normalized
         self.onesided = onesided
         if window is not None and not hasattr(torch, f"{window}_window"):
@@ -45,7 +43,6 @@ class Stft(torch.nn.Module, InversibleInterface):
             f"win_length={self.win_length}, "
             f"hop_length={self.hop_length}, "
             f"center={self.center}, "
-            f"pad_mode={self.pad_mode}, "
             f"normalized={self.normalized}, "
             f"onesided={self.onesided}"
         )
@@ -91,7 +88,6 @@ class Stft(torch.nn.Module, InversibleInterface):
             hop_length=self.hop_length,
             center=self.center,
             window=window,
-            pad_mode=self.pad_mode,
             normalized=self.normalized,
             onesided=self.onesided,
         )
@@ -122,9 +118,12 @@ class Stft(torch.nn.Module, InversibleInterface):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Inverse STFT.
 
-        :param input: Tensor (batch, T, F, 2) or ComplexTensor (batch, T, F)
-        :param ilens:
-        :return:
+        Args:
+            input: Tensor(batch, T, F, 2) or ComplexTensor(batch, T, F)
+            ilens: (batch,)
+        Returns:
+            wavs: (batch, samples)
+            ilens: (batch,)
         """
         if LooseVersion(torch.__version__) >= LooseVersion("1.6.0"):
             istft = torch.functional.istft
@@ -142,6 +141,14 @@ class Stft(torch.nn.Module, InversibleInterface):
                 )
             istft = torchaudio.functional.istft
 
+        if self.window is not None:
+            window_func = getattr(torch, f"{self.window}_window")
+            window = window_func(
+                self.win_length, dtype=input.dtype, device=input.device
+            )
+        else:
+            window = None
+
         if isinstance(input, ComplexTensor):
             input = torch.stack([input.real, input.imag], dim=-1)
         assert input.shape[-1] == 2
@@ -152,8 +159,8 @@ class Stft(torch.nn.Module, InversibleInterface):
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
+            window=window,
             center=self.center,
-            pad_mode=self.pad_mode,
             normalized=self.normalized,
             onesided=self.onesided,
             length=ilens.max() if ilens is not None else ilens,

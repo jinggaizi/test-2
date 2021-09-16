@@ -34,53 +34,34 @@ class LengthRegulator(torch.nn.Module):
             pad_value (float, optional): Value used for padding.
 
         """
-        super(LengthRegulator, self).__init__()
+        super().__init__()
         self.pad_value = pad_value
 
-    def forward(self, xs, ds, ilens, alpha=1.0):
+    def forward(self, xs, ds, alpha=1.0):
         """Calculate forward propagation.
 
         Args:
             xs (Tensor): Batch of sequences of char or phoneme embeddings (B, Tmax, D).
             ds (LongTensor): Batch of durations of each frame (B, T).
-            ilens (LongTensor): Batch of input lengths (B,).
             alpha (float, optional): Alpha value to control speed of speech.
 
         Returns:
             Tensor: replicated input tensor based on durations (B, T*, D).
 
         """
-        assert alpha > 0
         if alpha != 1.0:
+            assert alpha > 0
             ds = torch.round(ds.float() * alpha).long()
-        xs = [x[:ilen] for x, ilen in zip(xs, ilens)]
-        ds = [d[:ilen] for d, ilen in zip(ds, ilens)]
-        xs = [self._repeat_one_sequence(x, d) for x, d in zip(xs, ds)]
 
-        return pad_list(xs, self.pad_value)
+        if ds.sum() == 0:
+            logging.warning(
+                "predicted durations includes all 0 sequences. "
+                "fill the first element with 1."
+            )
+            # NOTE(kan-bayashi): This case must not be happend in teacher forcing.
+            #   It will be happened in inference with a bad duration predictor.
+            #   So we do not need to care the padded sequence case here.
+            ds[ds.sum(dim=1).eq(0)] = 1
 
-    def _repeat_one_sequence(self, x, d):
-        """Repeat each frame according to duration.
-
-        Examples:
-            >>> x = torch.tensor([[1], [2], [3]])
-            tensor([[1],
-                    [2],
-                    [3]])
-            >>> d = torch.tensor([1, 2, 3])
-            tensor([1, 2, 3])
-            >>> self._repeat_one_sequence(x, d)
-            tensor([[1],
-                    [2],
-                    [2],
-                    [3],
-                    [3],
-                    [3]])
-
-        """
-        if d.sum() == 0:
-            logging.warning("all of the predicted durations are 0. fill 0 with 1.")
-            d = d.fill_(1)
-        return torch.cat(
-            [x_.repeat(int(d_), 1) for x_, d_ in zip(x, d) if d_ != 0], dim=0
-        )
+        repeat = [torch.repeat_interleave(x, d, dim=0) for x, d in zip(xs, ds)]
+        return pad_list(repeat, self.pad_value)

@@ -20,8 +20,14 @@ def to_device(m, x):
         Tensor: Torch tensor located in the same place as torch module.
 
     """
-    assert isinstance(m, torch.nn.Module)
-    device = next(m.parameters()).device
+    if isinstance(m, torch.nn.Module):
+        device = next(m.parameters()).device
+    elif isinstance(m, torch.Tensor):
+        device = m.device
+    else:
+        raise TypeError(
+            "Expected torch.nn.Module or torch.tensor, " f"bot got: {type(m)}"
+        )
     return x.to(device)
 
 
@@ -258,6 +264,36 @@ def make_non_pad_mask(lengths, xs=None, length_dim=-1):
     """
     return ~make_pad_mask(lengths, xs, length_dim)
 
+def make_non_pad_mask_context(lengths, xs, mask_left=0, mask_right=0, length_dim=-1):
+    if length_dim == 0:
+        raise ValueError("length_dim cannot be 0: {}".format(length_dim))
+
+    if not isinstance(lengths, list):
+        lengths = lengths.tolist()
+    bs = int(len(lengths))
+
+    maxlen = int(max(lengths))
+    context_length = 1 + mask_left + mask_right
+
+    # seq_range = torch.arange(0, maxlen, dtype=torch.int64)
+    # seq_range_expand = seq_range.unsqueeze(0).expand(bs*maxlen, maxlen)
+    seq_range_expand = torch.zeros(bs, maxlen, maxlen, dtype=torch.int64)
+    for i in range(0, seq_range_expand.shape[1]):
+        for j in range(0, bs):
+            left_index = 0 if i < mask_left else i - mask_left
+            right_index = i + 1 + mask_right if i < lengths[j] else lengths[j]
+            seq_range_expand[j, i, left_index:right_index] = 1 if i < lengths[j] else 0
+    mask = seq_range_expand
+
+    # assert xs.size(0) == bs, (xs.size(0), bs)
+    # if length_dim < 0:
+    #     length_dim = xs.dim() + length_dim
+    # # ind = (:, None, ..., None, :, , None, ..., None)
+    # ind = tuple(
+    #     slice(None) if i in (0, length_dim) else None for i in range(xs.dim())
+    # )
+    # mask = mask[ind].expand_as(xs).to(xs.device)
+    return mask
 
 def mask_by_length(xs, lengths, fill=0):
     """Mask tensor according to length.
@@ -474,3 +510,18 @@ def rename_state_dict(
         v = state_dict.pop(k)
         new_k = k.replace(old_prefix, new_prefix)
         state_dict[new_k] = v
+
+def get_activation(act):
+    """Return activation function."""
+    # Lazy load to avoid unused import
+    from espnet.nets.pytorch_backend.conformer.swish import Swish
+
+    activation_funcs = {
+        "hardtanh": torch.nn.Hardtanh,
+        "tanh": torch.nn.Tanh,
+        "relu": torch.nn.ReLU,
+        "selu": torch.nn.SELU,
+        "swish": Swish,
+    }
+
+    return activation_funcs[act]()

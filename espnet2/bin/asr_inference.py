@@ -16,6 +16,7 @@ from typing import List
 
 from espnet.nets.batch_beam_search import BatchBeamSearch
 from espnet.nets.beam_search import BeamSearch
+from espnet.nets.batch_beam_search_transducer import BatchBeamSearchTransducer
 from espnet.nets.beam_search import Hypothesis
 from espnet.nets.scorer_interface import BatchScorerInterface
 from espnet.nets.scorers.ctc import CTCPrefixScorer
@@ -64,6 +65,7 @@ class Speech2Text:
         lm_weight: float = 1.0,
         penalty: float = 0.0,
         nbest: int = 1,
+        simulate_streaming: bool = False,
     ):
         assert check_argument_types()
 
@@ -72,15 +74,31 @@ class Speech2Text:
         asr_model, asr_train_args = ASRTask.build_model_from_file(
             asr_train_config, asr_model_file, device
         )
-        asr_model.eval()
+        asr_model.encoder.decoding = True
+        if simulate_streaming:
+            asr_model.encoder.simulate_streaming = True
+        asr_model.to(dtype=getattr(torch, dtype)).eval()
 
-        decoder = asr_model.decoder
-        ctc = CTCPrefixScorer(ctc=asr_model.ctc, eos=asr_model.eos)
+        #decoder = asr_model.decoder
+        #rnnt_decoder = asr_model.rnnt_decoder
+        #ctc = CTCPrefixScorer(ctc=asr_model.ctc, eos=asr_model.eos)
         token_list = asr_model.token_list
+        """scorers.update(
+            decoder=decoder,
+            ctc=ctc,
+            rnnt_decoder = rnnt_decoder,
+            length_bonus=LengthBonus(len(token_list)),
+        )"""
         scorers.update(
-            decoder=decoder, ctc=ctc, length_bonus=LengthBonus(len(token_list)),
+            length_bonus=LengthBonus(len(token_list)),
         )
-
+        if asr_model.decoder is not None :
+            scorers["decoder"] = asr_model.decoder
+        if asr_model.ctc is not None :
+            ctc = CTCPrefixScorer(ctc=asr_model.ctc, eos=asr_model.eos)
+            scorers["ctc"] = ctc
+        if asr_model.rnnt_decoder  is not None :
+            scorers["rnnt_decoder"] = asr_model.rnnt_decoder
         # 2. Build Language model
         if lm_train_config is not None:
             lm, lm_train_args = LMTask.build_model_from_file(
@@ -89,12 +107,31 @@ class Speech2Text:
             scorers["lm"] = lm.lm
 
         # 3. Build BeamSearch object
-        weights = dict(
-            decoder=1.0 - ctc_weight,
-            ctc=ctc_weight,
-            lm=lm_weight,
-            length_bonus=penalty,
-        )
+        weights = {}
+        if asr_model.decoder is not None :
+            weights = dict(
+                decoder=1.0 - ctc_weight,
+                ctc=ctc_weight,
+                lm=lm_weight,
+                length_bonus=penalty,
+            )
+        elif asr_model.rnnt_decoder is not None :
+            if ctc_weight == 1.0 :
+                weights = dict(
+                    ctc=ctc_weight,
+                    lm=lm_weight,
+                    length_bonus=penalty,
+                )
+            else:
+                weights = dict(
+                    rnnt_decoder=1.0,
+                    ctc=0,
+                    lm=lm_weight,
+                    length_bonus=penalty,
+                )
+        else:
+            raise NotImplementedError("Set AED or Transducer mode")
+
         beam_search = BeamSearch(
             beam_size=beam_size,
             weights=weights,
@@ -113,8 +150,16 @@ class Speech2Text:
                 if not isinstance(v, BatchScorerInterface)
             ]
             if len(non_batch) == 0:
-                beam_search.__class__ = BatchBeamSearch
-                logging.info("BatchBeamSearch implementation is selected.")
+                if asr_model.rnnt_decoder is not None:
+                    if ctc_weight == 1.0 :
+                        beam_search.__class__ = BatchBeamSearch
+                        logging.info("BatchBeamSearch implementation is selected.")
+                    else:
+                        beam_search.__class__ = BatchBeamSearchTransducer
+                        logging.info("BatchBeamSearchTransducer implementation is selected.")
+                else:
+                    beam_search.__class__ = BatchBeamSearch
+                    logging.info("BatchBeamSearch implementation is selected.")
             else:
                 logging.warning(
                     f"As non-batch scorers {non_batch} are found, "
@@ -186,7 +231,13 @@ class Speech2Text:
         # b. Forward Encoder
         enc, _ = self.asr_model.encode(**batch)
         assert len(enc) == 1, len(enc)
-
+        import pdb
+        #pdb.set_trace()
+        frame = torch.zeros(enc[0].size(0))
+        for i in range(enc[0].size(0)):
+            frame[i] = self.asr_model.ctc.log_softmax(enc)[0][i].topk(1)[1]
+            #print("index, label is", i, frame[i])
+        print("first frame is ", int(torch.where(frame>0)[0][0]))
         # c. Passed the encoder result and the beam search
         nbest_hyps = self.beam_search(
             x=enc[0], maxlenratio=self.maxlenratio, minlenratio=self.minlenratio
@@ -202,6 +253,8 @@ class Speech2Text:
 
             # remove blank symbol id, which is assumed to be 0
             token_int = list(filter(lambda x: x != 0, token_int))
+            token_int = list(filter(lambda x: x != 1, token_int))
+            token_int = list(filter(lambda x: x != self.asr_model.eos, token_int))
 
             # Change integer-ids to tokens
             token = self.converter.ids2tokens(token_int)
@@ -242,6 +295,7 @@ def inference(
     token_type: Optional[str],
     bpemodel: Optional[str],
     allow_variable_data_keys: bool,
+    simulate_streaming: bool,
 ):
     assert check_argument_types()
     if batch_size > 1:
@@ -281,6 +335,7 @@ def inference(
         lm_weight=lm_weight,
         penalty=penalty,
         nbest=nbest,
+        simulate_streaming=simulate_streaming,
     )
 
     # 3. Build data-iterator
@@ -291,7 +346,7 @@ def inference(
         key_file=key_file,
         num_workers=num_workers,
         preprocess_fn=ASRTask.build_preprocess_fn(speech2text.asr_train_args, False),
-        collate_fn=ASRTask.build_collate_fn(speech2text.asr_train_args),
+        collate_fn=ASRTask.build_collate_fn(speech2text.asr_train_args, False),
         allow_variable_data_keys=allow_variable_data_keys,
         inference=True,
     )
@@ -336,13 +391,16 @@ def get_parser():
         "--log_level",
         type=lambda x: x.upper(),
         default="INFO",
-        choices=("INFO", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"),
+        choices=("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"),
         help="The verbose level of logging",
     )
 
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument(
-        "--ngpu", type=int, default=0, help="The number of gpus. 0 indicates CPU mode",
+        "--ngpu",
+        type=int,
+        default=0,
+        help="The number of gpus. 0 indicates CPU mode",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument(
@@ -356,6 +414,12 @@ def get_parser():
         type=int,
         default=1,
         help="The number of workers used for DataLoader",
+    )
+
+    parser.add_argument(
+        "--simulate_streaming",
+        action="store_true",
+        help="simulate streaming inference",
     )
 
     group = parser.add_argument_group("Input data related")
@@ -378,7 +442,10 @@ def get_parser():
 
     group = parser.add_argument_group("Beam-search related")
     group.add_argument(
-        "--batch_size", type=int, default=1, help="The batch size for inference",
+        "--batch_size",
+        type=int,
+        default=1,
+        help="The batch size for inference",
     )
     group.add_argument("--nbest", type=int, default=1, help="Output N-best hypotheses")
     group.add_argument("--beam_size", type=int, default=20, help="Beam size")
@@ -399,7 +466,10 @@ def get_parser():
         help="Input length ratio to obtain min output length",
     )
     group.add_argument(
-        "--ctc_weight", type=float, default=0.5, help="CTC weight in joint decoding",
+        "--ctc_weight",
+        type=float,
+        default=0.5,
+        help="CTC weight in joint decoding",
     )
     group.add_argument("--lm_weight", type=float, default=1.0, help="RNNLM weight")
 

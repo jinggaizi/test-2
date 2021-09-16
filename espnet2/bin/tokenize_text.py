@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 from collections import Counter
 import logging
@@ -27,7 +28,6 @@ def field2slice(field: Optional[str]) -> slice:
         slice(0, 3, None)
         >>> field2slice("-3")
         slice(None, 3, None)
-
     """
     field = field.strip()
     try:
@@ -53,9 +53,12 @@ def field2slice(field: Optional[str]) -> slice:
     except ValueError:
         raise RuntimeError(f"Format error: e.g. '2-', '2-5', or '-5': {field}")
 
-    # -1 because of 1-based integer following "cut" command
-    # e.g "1-3" -> slice(0, 3)
-    slic = slice(s1 - 1, s2)
+    if s1 is None:
+        slic = slice(None, s2)
+    else:
+        # -1 because of 1-based integer following "cut" command
+        # e.g "1-3" -> slice(0, 3)
+        slic = slice(s1 - 1, s2)
     return slic
 
 
@@ -179,7 +182,7 @@ def get_parser() -> argparse.ArgumentParser:
         "--log_level",
         type=lambda x: x.upper(),
         default="INFO",
-        choices=("INFO", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"),
+        choices=("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"),
         help="The verbose level of logging",
     )
 
@@ -231,8 +234,11 @@ def get_parser() -> argparse.ArgumentParser:
             "g2p_en_no_space",
             "pyopenjtalk",
             "pyopenjtalk_kana",
+            "pyopenjtalk_accent",
+            "pyopenjtalk_accent_with_pause",
             "pypinyin_g2p",
             "pypinyin_g2p_phone",
+            "espeak_ng_arabic",
         ],
         default=None,
         help="Specify g2p method if --token_type=phn",

@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 # Copyright 2020 Nagoya University (Wen-Chin Huang)
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
@@ -435,7 +432,8 @@ class Tacotron2(TTSInterface, torch.nn.Module):
         )
         if self.use_guided_attn_loss:
             self.attn_loss = GuidedAttentionLoss(
-                sigma=args.guided_attn_loss_sigma, alpha=args.guided_attn_loss_lambda,
+                sigma=args.guided_attn_loss_sigma,
+                alpha=args.guided_attn_loss_lambda,
             )
         if self.use_cbhg:
             self.cbhg = CBHG(
