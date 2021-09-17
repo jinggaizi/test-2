@@ -28,6 +28,7 @@ from espnet2.asr.streaming_u2.subsampling import Conv2dSubsampling4
 from espnet2.asr.streaming_u2.embedding import PositionalEncoding
 from espnet2.asr.streaming_u2.embedding import RelPositionalEncoding
 from espnet2.asr.streaming_u2.mask import add_optional_chunk_mask
+import pdb
 
 
 
@@ -210,10 +211,10 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         """
         masks = (~make_pad_mask(ilens)[:, None, :]).to(xs_pad.device)
         # Emask_ = Emask
-        import pdb
+
         #pdb.set_trace()
-        self.simulate_streaming = True
-        self.non_causal = False
+        # self.simulate_streaming = True
+        # self.non_causal = False
         if self.decoding:
             if self.simulate_streaming:
                 xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, self.decoding_chunk_length, -1)

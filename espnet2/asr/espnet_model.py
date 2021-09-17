@@ -58,6 +58,7 @@ class ESPnetASRModel(AbsESPnetModel):
         ctc,
         rnnt_decoder,
         ctc_weight: float = 0.5,
+        rnnt_weight: float = 0.0,
         ignore_id: int = -1,
         lsm_weight: float = 0.0,
         length_normalized_loss: bool = False,
@@ -81,6 +82,7 @@ class ESPnetASRModel(AbsESPnetModel):
         self.ignore_id = ignore_id
         self.blank_id = blank_id
         self.ctc_weight = ctc_weight
+        self.rnnt_weight = rnnt_weight
         self.token_list = token_list.copy()
 
         self.frontend = frontend
@@ -93,14 +95,19 @@ class ESPnetASRModel(AbsESPnetModel):
             self.ctc = None
         else:
             self.ctc = ctc
-        self.rnnt_decoder = rnnt_decoder
+        if rnnt_weight == 0.0:
+            self.rnnt_decoder = None
+            self.criterion_trans = None
+        else:
+            self.rnnt_decoder = rnnt_decoder
+            self.criterion_trans = TransLoss("warp-rnnt", lamb,  blank_id)
         self.criterion_att = LabelSmoothingLoss(
             size=vocab_size,
             padding_idx=ignore_id,
             smoothing=lsm_weight,
             normalize_length=length_normalized_loss,
         )
-        self.criterion_trans = TransLoss("warp-rnnt", lamb,  blank_id)
+        # self.criterion_trans = TransLoss("warp-rnnt", lamb,  blank_id)
         self.target_attn_mask_left = target_attn_mask_left
         if report_cer or report_wer:
             self.error_calculator = ErrorCalculator(
@@ -151,51 +158,77 @@ class ESPnetASRModel(AbsESPnetModel):
         # 1. Encoder
         encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
 
+        # # 2a. Attention-decoder branch
+        # if self.ctc_weight == 1.0:
+        #     loss_att, acc_att, cer_att, wer_att = None, None, None, None
+        # else:
+        #     if self.rnnt_decoder is not None:
+        #         # loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
+        #         loss_att, acc_att, cer_att, wer_att = None, None, None, None
+        #     else:
+        #         loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+        #             encoder_out, encoder_out_lens, text, text_lengths
+        #         )
+
+        # # 2b. CTC branch
+        # if self.ctc_weight == 0.0:
+        #     loss_ctc, cer_ctc = None, None
+        #     if self.rnnt_decoder is not None:
+        #         loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
+        #     else:
+        #         loss_rnnt, cer_rnnt = None, None
+        # else:
+        #     # 2c. RNN-T branch
+        #     if self.rnnt_decoder is not None:
+        #         loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
+        #         loss_ctc, cer_ctc = self._calc_ctc_loss(
+        #             encoder_out, encoder_out_lens, text, text_lengths
+        #         )
+        #     else:
+        #         loss_ctc, cer_ctc = self._calc_ctc_loss(
+        #             encoder_out, encoder_out_lens, text, text_lengths
+        #         )
+        #         loss_rnnt, cer_rnnt = None, None
+
+        # if self.ctc_weight == 0.0:
+        #     if self.rnnt_decoder is not None:
+        #         loss = loss_rnnt
+        #     else:
+        #         loss = loss_att
+        # elif self.ctc_weight == 1.0:
+        #     loss = loss_ctc
+        # else:
+        #     if self.rnnt_decoder is not None:
+        #         loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_rnnt
+        #     else:
+        #         loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att
         # 2a. Attention-decoder branch
-        if self.ctc_weight == 1.0:
+        if (self.ctc_weight + self.rnnt_weight) == 1.0:
             loss_att, acc_att, cer_att, wer_att = None, None, None, None
         else:
-            if self.rnnt_decoder is not None:
-                # loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
-                loss_att, acc_att, cer_att, wer_att = None, None, None, None
-            else:
-                loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+            loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
                     encoder_out, encoder_out_lens, text, text_lengths
                 )
-
         # 2b. CTC branch
         if self.ctc_weight == 0.0:
             loss_ctc, cer_ctc = None, None
-            if self.rnnt_decoder is not None:
-                loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
-            else:
-                loss_rnnt, cer_rnnt = None, None
         else:
-            # 2c. RNN-T branch
-            if self.rnnt_decoder is not None:
-                loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
-                loss_ctc, cer_ctc = self._calc_ctc_loss(
+            loss_ctc, cer_ctc = self._calc_ctc_loss(
                     encoder_out, encoder_out_lens, text, text_lengths
                 )
-            else:
-                loss_ctc, cer_ctc = self._calc_ctc_loss(
-                    encoder_out, encoder_out_lens, text, text_lengths
-                )
-                loss_rnnt, cer_rnnt = None, None
-
-        if self.ctc_weight == 0.0:
-            if self.rnnt_decoder is not None:
-                loss = loss_rnnt
-            else:
-                loss = loss_att
-        elif self.ctc_weight == 1.0:
-            loss = loss_ctc
+        # 2c. RNN-T branch
+        if self.rnnt_weight == 0.0:
+            loss_rnnt, cer_rnnt = None, None
         else:
-            if self.rnnt_decoder is not None:
-                loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_rnnt
-            else:
-                loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att
-
+            loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
+        
+        if loss_att is not None:
+            loss = (1 - self.ctc_weight - self.rnnt_weight) * loss_att
+        if loss_ctc is not None:
+            loss = loss + self.ctc_weight * loss_ctc
+        if loss_rnnt is not None:
+            loss = loss + self.rnnt_weight * loss_rnnt
+        
         stats = dict(
             loss=loss.detach(),
             loss_att=loss_att.detach() if loss_att is not None else None,

@@ -70,9 +70,9 @@ class TransLoss(torch.nn.Module):
                     pred_len[i],
                     target_len[i],
                     reduction="mean",
-                    lamb=self.lamb,
                     blank=self.blank_id,
                     gather=True,
+                    # fastemit_lambda=self.lamb,
                 )
             loss = loss.mean()
 

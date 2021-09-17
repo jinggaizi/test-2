@@ -62,6 +62,7 @@ class Speech2Text:
         dtype: str = "float32",
         beam_size: int = 20,
         ctc_weight: float = 0.5,
+        rnnt_weight: float = 0.0,
         lm_weight: float = 1.0,
         penalty: float = 0.0,
         nbest: int = 1,
@@ -108,7 +109,7 @@ class Speech2Text:
 
         # 3. Build BeamSearch object
         weights = {}
-        if asr_model.decoder is not None :
+        if asr_model.decoder is not None and rnnt_weight == 0.0:
             weights = dict(
                 decoder=1.0 - ctc_weight,
                 ctc=ctc_weight,
@@ -279,6 +280,7 @@ def inference(
     ngpu: int,
     seed: int,
     ctc_weight: float,
+    rnnt_weight: float,
     lm_weight: float,
     penalty: float,
     nbest: int,
@@ -332,6 +334,7 @@ def inference(
         dtype=dtype,
         beam_size=beam_size,
         ctc_weight=ctc_weight,
+        rnnt_weight=rnnt_weight,
         lm_weight=lm_weight,
         penalty=penalty,
         nbest=nbest,
@@ -470,6 +473,12 @@ def get_parser():
         type=float,
         default=0.5,
         help="CTC weight in joint decoding",
+    )
+    group.add_argument(
+        "--rnnt_weight",
+        type=float,
+        default=0.0,
+        help="RNNT weight in joint decoding",
     )
     group.add_argument("--lm_weight", type=float, default=1.0, help="RNNLM weight")
 
