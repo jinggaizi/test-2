@@ -217,7 +217,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         # self.non_causal = False
         if self.decoding:
             if self.simulate_streaming:
-                xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, self.decoding_chunk_length, -1)
+                xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, 22, -1)
                 olens = masks.squeeze(1).sum(1)
                 olens = torch.ones(masks.squeeze(1).size(), dtype=olens.dtype, device=olens.device).sum(1)
                 if self.non_causal == True:
@@ -238,7 +238,8 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                                               self.static_chunk_size,
                                               -1)
                 for layer in self.causal_encoders:
-                    xs_pad, chunk_masks, _ = layer(xs_pad, chunk_masks, pos_emb, masks)
+                    #xs_pad, chunk_masks, _ = layer(xs_pad, chunk_masks, pos_emb, masks)
+                    xs_pad, masks, _ = layer(xs_pad, masks, pos_emb, masks)
                 if self.non_causal:
                     for layer in self.non_causal_encoders:
                         xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)

@@ -54,7 +54,7 @@ class CTC(torch.nn.Module):
         if self.ctc_type == "builtin":
             th_pred = th_pred.log_softmax(2)
             loss = self.ctc_loss(th_pred, th_target, th_ilen, th_olen)
-            if self.ctc_fastemit:
+            if self.ctc_fastemit and th_pred.requires_grad:
                 th_pred.register_hook(lambda grad:torch.cat((0.01*grad[:,:,0].unsqueeze(2), grad[:,:,1:]), dim=2))
 
             if loss.requires_grad and self.ignore_nan_grad:
