@@ -94,6 +94,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         causal_weight: float = 0.3,
         decoding: bool = False,
         decoding_chunk_length: int = 10, 
+        num_decoding_left_chunks: int = -1,
         simulate_streaming: bool = False,
     
     ):
@@ -187,6 +188,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         self.decoding = decoding
         self.simulate_streaming = simulate_streaming
         self.decoding_chunk_length = decoding_chunk_length
+        self.num_decoding_left_chunks = num_decoding_left_chunks
 
     def output_size(self) -> int:
         return self._output_size
@@ -217,7 +219,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         # self.non_causal = False
         if self.decoding:
             if self.simulate_streaming:
-                xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, 22, -1)
+                xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, self.decoding_chunk_length, self.num_decoding_left_chunks)
                 olens = masks.squeeze(1).sum(1)
                 olens = torch.ones(masks.squeeze(1).size(), dtype=olens.dtype, device=olens.device).sum(1)
                 if self.non_causal == True:
@@ -236,10 +238,9 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                                               self.use_dynamic_left_chunk,
                                               self.decoding_chunk_length,
                                               self.static_chunk_size,
-                                              -1)
+                                              self.num_decoding_left_chunks)
                 for layer in self.causal_encoders:
-                    #xs_pad, chunk_masks, _ = layer(xs_pad, chunk_masks, pos_emb, masks)
-                    xs_pad, masks, _ = layer(xs_pad, masks, pos_emb, masks)
+                    xs_pad, chunk_masks, _ = layer(xs_pad, chunk_masks, pos_emb, masks)
                 if self.non_causal:
                     for layer in self.non_causal_encoders:
                         xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
