@@ -151,7 +151,7 @@ class Speech2Text:
                 if not isinstance(v, BatchScorerInterface)
             ]
             if len(non_batch) == 0:
-                if asr_model.rnnt_decoder is not None:
+                if asr_model.rnnt_decoder is not None and rnnt_weight == 1.0:
                     if ctc_weight == 1.0 :
                         beam_search.__class__ = BatchBeamSearch
                         logging.info("BatchBeamSearch implementation is selected.")
