@@ -126,8 +126,11 @@ def add_optional_chunk_mask(xs: torch.Tensor, masks: torch.Tensor,
                 chunk_size = chunk_size % 15 + 8
                 if use_dynamic_left_chunk:
                     max_left_chunks = (max_len - 1) // chunk_size
-                    num_left_chunks = torch.randint(0, max_left_chunks,
-                                                    (1, )).item()
+                    if max_left_chunks == 0:
+                        num_left_chunks = 0
+                    else:
+                        num_left_chunks = torch.randint(0, max_left_chunks,
+                                                        (1, )).item()
         chunk_masks = subsequent_chunk_mask(xs.size(1), chunk_size,
                                             num_left_chunks,
                                             xs.device)  # (L, L)
