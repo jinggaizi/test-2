@@ -60,32 +60,33 @@ class TransLoss(torch.nn.Module):
             # warp-transducer and warp-rnnt only support float32
             pred_pad = pred_pad.to(dtype=torch.float32)
         if self.trans_type == "warp-rnnt":
-            loss = torch.zeros(pred_pad.shape[0], device=pred_pad.device)
-            for i in range(pred_pad.shape[0]):
-                pred_pad_per_utt = pred_pad[i].unsqueeze(0)
-                log_probs = torch.log_softmax(pred_pad_per_utt, dim=-1)
-                loss[i] = self.trans_loss(
-                    log_probs,
-                    target[i].unsqueeze(0),
-                    pred_len[i],
-                    target_len[i],
-                    reduction="mean",
-                    blank=self.blank_id,
-                    gather=True,
-                    # fastemit_lambda=self.lamb,
-                )
-            loss = loss.mean()
+            # loss = torch.zeros(pred_pad.shape[0], device=pred_pad.device)
+            # for i in range(pred_pad.shape[0]):
+            #     pred_pad_per_utt = pred_pad[i].unsqueeze(0)
+            #     log_probs = torch.log_softmax(pred_pad_per_utt, dim=-1)
+            #     loss[i] = self.trans_loss(
+            #         log_probs,
+            #         target[i].unsqueeze(0),
+            #         pred_len[i],
+            #         target_len[i],
+            #         reduction="mean",
+            #         blank=self.blank_id,
+            #         gather=True,
+            #         # fastemit_lambda=self.lamb,
+            #     )
+            # loss = loss.mean()
 
-            # log_probs = torch.log_softmax(pred_pad, dim=-1)
-            # loss = self.trans_loss(
-            #     log_probs,
-            #     target,
-            #     pred_len,
-            #     target_len,
-            #     reduction="mean",
-            #     blank=self.blank_id,
-            #     gather=True,
-            # )
+            log_probs = torch.log_softmax(pred_pad, dim=-1)
+            loss = self.trans_loss(
+                log_probs,
+                target,
+                pred_len,
+                target_len,
+                reduction="mean",
+                blank=self.blank_id,
+                gather=True,
+                # fastemit_lambda=self.lamb,
+            )
         else:
             loss = self.trans_loss(pred_pad, target, pred_len, target_len)
         loss = loss.to(dtype=dtype)

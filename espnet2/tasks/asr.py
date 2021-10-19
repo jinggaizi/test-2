@@ -413,15 +413,12 @@ class ASRTask(AbsTask):
         encoder = encoder_class(input_size=input_size, **args.encoder_conf)
 
         # 6. Decoder
-        decoder = None
-        
         decoder_class = decoder_choices.get_class(args.decoder)
-        if args.rnnt_decoder is  None:
-            decoder = decoder_class(
-                vocab_size=vocab_size,
-                encoder_output_size=encoder.output_size(),
-                **args.decoder_conf,
-            )
+        decoder = decoder_class(
+            vocab_size=vocab_size,
+            encoder_output_size=encoder.output_size(),
+            **args.decoder_conf,
+        )
 
         # 7. CTC
         ctc = CTC(

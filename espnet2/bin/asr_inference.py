@@ -238,7 +238,7 @@ class Speech2Text:
         for i in range(enc[0].size(0)):
             frame[i] = self.asr_model.ctc.log_softmax(enc)[0][i].topk(1)[1]
             #print("index, label is", i, frame[i])
-        print("first frame is ", int(torch.where(frame>0)[0][0]))
+        # print("first frame is ", int(torch.where(frame>0)[0][0]))
         # c. Passed the encoder result and the beam search
         nbest_hyps = self.beam_search(
             x=enc[0], maxlenratio=self.maxlenratio, minlenratio=self.minlenratio
