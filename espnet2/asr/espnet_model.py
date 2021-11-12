@@ -55,10 +55,13 @@ class ESPnetASRModel(AbsESPnetModel):
         preencoder: Optional[AbsPreEncoder],
         encoder: AbsEncoder,
         decoder,
+        decoder_causal,
         ctc,
         rnnt_decoder,
         ctc_weight: float = 0.5,
         rnnt_weight: float = 0.0,
+        ctc_causal_weight: float = 0.0,
+        att_causal_weight: float = 0.0,
         ignore_id: int = -1,
         lsm_weight: float = 0.0,
         length_normalized_loss: bool = False,
@@ -82,6 +85,8 @@ class ESPnetASRModel(AbsESPnetModel):
         self.ignore_id = ignore_id
         self.blank_id = blank_id
         self.ctc_weight = ctc_weight
+        self.ctc_causal_weight = ctc_causal_weight
+        self.att_causal_weight = att_causal_weight
         self.rnnt_weight = rnnt_weight
         self.token_list = token_list.copy()
 
@@ -91,6 +96,7 @@ class ESPnetASRModel(AbsESPnetModel):
         self.preencoder = preencoder
         self.encoder = encoder
         self.decoder = decoder
+        self.decoder_causal = decoder_causal
         if ctc_weight == 0.0:
             self.ctc = None
         else:
@@ -156,7 +162,10 @@ class ESPnetASRModel(AbsESPnetModel):
         text = text[:, : text_lengths.max()]
 
         # 1. Encoder
-        encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
+        if self.decoder_causal:
+            encoder_out, encoder_out_lens, encoder_out_causal = self.encode(speech, speech_lengths)
+        else:
+            encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
 
         # # 2a. Attention-decoder branch
         # if self.ctc_weight == 1.0:
@@ -221,18 +230,35 @@ class ESPnetASRModel(AbsESPnetModel):
             loss_rnnt, cer_rnnt = None, None
         else:
             loss_rnnt, cer_rnnt = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
+        # causal output loss
+        if not self.decoder_causal:
+            loss_ctc_causal, cer_ctc_causal = None, None
+            loss_att_causal, acc_att_causal, cer_att_causal, wer_att_causal = None, None, None, None
+        else:
+            loss_ctc_causal, cer_ctc_causal = self._calc_ctc_loss(
+                encoder_out_causal, encoder_out_lens, text, text_lengths
+            )
+            loss_att_causal, acc_att_causal, cer_att_causal, wer_att_causal = self._calc_att_loss(
+                encoder_out_causal, encoder_out_lens, text, text_lengths, True
+            )
         
         if loss_att is not None:
-            loss = (1 - self.ctc_weight - self.rnnt_weight) * loss_att
+            loss = (1 - self.ctc_weight - self.rnnt_weight - self.ctc_causal_weight - self.att_causal_weight) * loss_att
+        if loss_att_causal is not None:
+            loss = loss + self.att_causal_weight * loss_att_causal
         if loss_ctc is not None:
             loss = loss + self.ctc_weight * loss_ctc
+        if loss_ctc_causal is not None:
+            loss = loss + self.ctc_causal_weight * loss_ctc_causal
         if loss_rnnt is not None:
             loss = loss + self.rnnt_weight * loss_rnnt
         
         stats = dict(
             loss=loss.detach(),
             loss_att=loss_att.detach() if loss_att is not None else None,
+            loss_att_causal=loss_att_causal.detach() if loss_att_causal is not None else None,
             loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
+            loss_ctc_causal=loss_ctc_causal.detach() if loss_ctc_causal is not None else None,
             loss_rnnt=loss_rnnt.detach() if loss_rnnt is not None else None,
             acc=acc_att,
             cer=cer_att,
@@ -283,6 +309,14 @@ class ESPnetASRModel(AbsESPnetModel):
         # 4. Forward encoder
         # feats: (Batch, Length, Dim)
         # -> encoder_out: (Batch, Length2, Dim2)
+        if self.decoder_causal:
+            assert(self.encoder.intermediate_causal), "decoder_causal use cascaded model and must set intermediate_causal true"
+            encoder_out, encoder_out_lens, encoder_out_causal = self.encoder(feats, feats_lengths)
+            assert encoder_out.size(0) == speech.size(0), (
+                encoder_out.size(),
+                speech.size(0),
+            )
+            return encoder_out, encoder_out_lens, encoder_out_causal
         encoder_out, encoder_out_lens, _ = self.encoder(feats, feats_lengths)
 
         assert encoder_out.size(0) == speech.size(0), (
@@ -323,14 +357,20 @@ class ESPnetASRModel(AbsESPnetModel):
         encoder_out_lens: torch.Tensor,
         ys_pad: torch.Tensor,
         ys_pad_lens: torch.Tensor,
+        causal: bool = False,
     ):
         ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
         ys_in_lens = ys_pad_lens + 1
 
         # 1. Forward decoder
-        decoder_out, _ = self.decoder(
-            encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
-        )
+        if causal and self.decoder_causal:
+            decoder_out, _ = self.decoder_causal(
+                encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
+            )
+        else:
+            decoder_out, _ = self.decoder(
+                encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
+            )
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)

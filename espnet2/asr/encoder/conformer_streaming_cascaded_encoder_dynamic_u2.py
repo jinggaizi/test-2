@@ -96,6 +96,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         decoding_chunk_length: int = 10, 
         num_decoding_left_chunks: int = -1,
         simulate_streaming: bool = False,
+        intermediate_causal: bool = False,
     
     ):
         assert check_argument_types()
@@ -189,6 +190,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         self.simulate_streaming = simulate_streaming
         self.decoding_chunk_length = decoding_chunk_length
         self.num_decoding_left_chunks = num_decoding_left_chunks
+        self.intermediate_causal = intermediate_causal
 
     def output_size(self) -> int:
         return self._output_size
@@ -260,6 +262,16 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         #pdb.set_trace()
         for layer in self.causal_encoders:
             xs_pad, chunk_masks, _,   = layer(xs_pad, chunk_masks, pos_emb, masks)
+        if self.intermediate_causal:
+            if self.normalize_before:
+                xs_pad_causal = self.after_norm(xs_pad)
+            for layer in self.non_causal_encoders:
+                xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
+            if self.normalize_before:
+               xs_pad = self.after_norm(xs_pad) 
+            olens = masks.squeeze(1).sum(1)
+            return xs_pad, olens, xs_pad_causal       
+        
         random_val = torch.rand(1)
         if self.causal_weight < random_val:
             for layer in self.non_causal_encoders:

@@ -285,6 +285,12 @@ class ASRTask(AbsTask):
             default="13_15",
             help="The range of noise decibel level.",
         )
+        parser.add_argument(
+            "--decoder_causal",
+            type=str_or_none,
+            default=None,
+            help="whether use decoder_causal to cascaded model.",
+        )
 
         for class_choices in cls.class_choices_list:
             # Append --<name> and --<name>_conf.
@@ -419,6 +425,13 @@ class ASRTask(AbsTask):
             encoder_output_size=encoder.output_size(),
             **args.decoder_conf,
         )
+        decoder_causal = None
+        if args.decoder_causal:
+            decoder_causal = decoder_class(
+                vocab_size=vocab_size,
+                encoder_output_size=encoder.output_size(),
+                **args.decoder_conf,
+            )
 
         # 7. CTC
         ctc = CTC(
@@ -444,6 +457,7 @@ class ASRTask(AbsTask):
             preencoder=preencoder,
             encoder=encoder,
             decoder=decoder,
+            decoder_causal=decoder_causal,
             ctc=ctc,
             rnnt_decoder=rnnt_decoder,
             token_list=token_list,
