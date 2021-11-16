@@ -230,7 +230,10 @@ class Speech2Text:
         batch = to_device(batch, device=self.device)
 
         # b. Forward Encoder
-        enc, _ = self.asr_model.encode(**batch)
+        if self.asr_model.decoder_causal:
+            enc, _, _ = self.asr_model.encode(**batch)
+        else:  
+            enc, _ = self.asr_model.encode(**batch)
         assert len(enc) == 1, len(enc)
         import pdb
         #pdb.set_trace()
