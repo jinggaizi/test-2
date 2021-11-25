@@ -104,9 +104,9 @@ encoder_choices = ClassChoices(
         rnn=RNNEncoder,
         mask_conformer=ConformerMaskEncoder,
         conformer_sx=ConformerStreamingEncoder,
-        conformer_sx_u2=ConformerStreamingU2Encoder,
+        conformer_u2=ConformerStreamingU2Encoder,
         conformer_sx_cascaded=ConformerStreamingCascadedEncoder,
-        conformer_sx_cascaded_u2=ConformerStreamingCascadedU2Encoder,
+        conformer_cascaded_u2=ConformerStreamingCascadedU2Encoder,
     ),
     type_check=AbsEncoder,
     default="rnn",
@@ -426,7 +426,7 @@ class ASRTask(AbsTask):
             **args.decoder_conf,
         )
         decoder_causal = None
-        if args.decoder_causal:
+        if args.decoder_causal is not None:
             decoder_causal = decoder_class(
                 vocab_size=vocab_size,
                 encoder_output_size=encoder.output_size(),

@@ -85,12 +85,12 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         use_cnn_module: bool = True,
         cnn_module_kernel: int = 31,
         padding_idx: int = -1,
-        causal: bool = True,
+        use_causal_cnn: bool = True,
         cnn_module_norm: str = "batch_norm",
         static_chunk_size: int = 0,
         use_dynamic_chunk: bool = False,
         use_dynamic_left_chunk: bool = False,
-        non_causal: bool = False,
+        use_non_causal_layer_decoding: bool = False,
         causal_weight: float = 0.3,
         decoding: bool = False,
         decoding_chunk_length: int = 10, 
@@ -148,7 +148,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
             raise ValueError("unknown encoder_attn_layer: " + selfattention_layer_type)
 
         convolution_layer = ConvolutionModule
-        convolution_causal_layer_args = (output_size, cnn_module_kernel, activation, cnn_module_norm, causal)
+        convolution_causal_layer_args = (output_size, cnn_module_kernel, activation, cnn_module_norm, use_causal_cnn)
         convolution_non_causal_layer_args = (output_size, cnn_module_kernel, activation, cnn_module_norm)
 
         self.causal_encoders = repeat(
@@ -184,7 +184,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         self.use_dynamic_chunk = use_dynamic_chunk
         self.use_dynamic_left_chunk = use_dynamic_left_chunk
         self.static_chunk_size = static_chunk_size
-        self.non_causal = non_causal
+        self.use_non_causal_layer_decoding = use_non_causal_layer_decoding
         self.causal_weight = causal_weight
         self.decoding = decoding
         self.simulate_streaming = simulate_streaming
@@ -217,21 +217,18 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         # Emask_ = Emask
 
         #pdb.set_trace()
-        # self.simulate_streaming = True
-        # self.non_causal = False
         if self.decoding:
             if self.simulate_streaming:
                 xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, self.decoding_chunk_length, self.num_decoding_left_chunks)
                 olens = masks.squeeze(1).sum(1)
                 olens = torch.ones(masks.squeeze(1).size(), dtype=olens.dtype, device=olens.device).sum(1)
-                if self.non_causal == True:
+                if self.use_non_causal_layer_decoding == True:
                     for layer in self.non_causal_encoders:
                         xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
                     if self.normalize_before:
                         xs_pad = self.after_norm(xs_pad)
                     return xs_pad, olens, None
                 else:
-                        #return xs_pad_causal_norm, olens, None
                     return xs_pad, olens, None
             else:
                 xs_pad, pos_emb, masks = self.embed(xs_pad, masks)
@@ -243,7 +240,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                                               self.num_decoding_left_chunks)
                 for layer in self.causal_encoders:
                     xs_pad, chunk_masks, _ = layer(xs_pad, chunk_masks, pos_emb, masks)
-                if self.non_causal:
+                if self.use_non_causal_layer_decoding:
                     for layer in self.non_causal_encoders:
                         xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
                 if self.normalize_before:
@@ -262,6 +259,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         #pdb.set_trace()
         for layer in self.causal_encoders:
             xs_pad, chunk_masks, _,   = layer(xs_pad, chunk_masks, pos_emb, masks)
+
         if self.intermediate_causal:
             if self.normalize_before:
                 xs_pad_causal = self.after_norm(xs_pad)
@@ -271,18 +269,18 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                xs_pad = self.after_norm(xs_pad) 
             olens = masks.squeeze(1).sum(1)
             return xs_pad, olens, xs_pad_causal       
+        else:
+            random_val = torch.rand(1)
+            if self.causal_weight < random_val:
+                for layer in self.non_causal_encoders:
+                    xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
         
-        random_val = torch.rand(1)
-        if self.causal_weight < random_val:
-            for layer in self.non_causal_encoders:
-                xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
-       
-        if self.normalize_before:
-            xs_pad = self.after_norm(xs_pad)
+            if self.normalize_before:
+                xs_pad = self.after_norm(xs_pad)
 
-        olens = masks.squeeze(1).sum(1)
-        
-        return xs_pad, olens, None
+            olens = masks.squeeze(1).sum(1)
+            
+            return xs_pad, olens, None
 
     def forward_chunk(
         self,
@@ -358,7 +356,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                                          cnn_cache=cnn_cache)
             r_elayers_output_cache.append(xs[:, next_cache_start:, :])
             r_conformer_cnn_cache.append(new_cnn_cache)
-        if self.non_causal == True:
+        if self.use_non_causal_layer_decoding == True:
             pass
         else:
             if self.normalize_before:
@@ -368,6 +366,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
 
         return (xs[:, cache_size:, :], r_subsampling_cache,
                 r_elayers_output_cache, r_conformer_cnn_cache, pos_emb[:, cache_size:, :])
+    
     def forward_chunk_by_chunk(
         self,
         xs: torch.Tensor,
