@@ -46,6 +46,7 @@ class TransducerRNNDecoder(AbsRNNTDecoder, BatchScorerInterface):
         dropout: float = 0.0,
         dropout_embed: float = 0.0,
         joint_activation_type="tanh",
+        joint_memory_reduction: bool=False,
     ):
         """Transducer initializer."""
         super().__init__()
@@ -66,7 +67,7 @@ class TransducerRNNDecoder(AbsRNNTDecoder, BatchScorerInterface):
             self.dropout_dec += [torch.nn.Dropout(p=dropout)]
 
         self.joint_network = JointNetwork(
-            vocab_size, encoder_output_size, dunits, joint_dim, joint_activation_type
+            vocab_size, encoder_output_size, dunits, joint_dim, joint_activation_type, joint_memory_reduction
         )
 
         self.dlayers = dlayers
@@ -78,6 +79,7 @@ class TransducerRNNDecoder(AbsRNNTDecoder, BatchScorerInterface):
 
         self.ignore_id = -1
         self.blank = blank
+        self.joint_memory_reduction = joint_memory_reduction
 
     def init_state(self, init_tensor):
         """Initialize decoder states.
@@ -170,7 +172,7 @@ class TransducerRNNDecoder(AbsRNNTDecoder, BatchScorerInterface):
 
         return y, (z_list, c_list)
 
-    def forward(self, hs_pad, ys_in_pad, hlens=None):
+    def forward(self, hs_pad, ys_in_pad, pred_len=None, target_len=None, hlens=None):
         """Forward function for transducer.
 
         Args:
@@ -198,7 +200,10 @@ class TransducerRNNDecoder(AbsRNNTDecoder, BatchScorerInterface):
         h_dec = torch.stack(z_all, dim=1)
         h_dec = h_dec.unsqueeze(1)
 
-        z = self.joint_network(h_enc, h_dec)
+        z = self.joint_network(h_enc,
+                               h_dec,
+                               pred_len=pred_len if self.joint_memory_reduction else None,
+                               target_len=target_len if self.joint_memory_reduction else None)
 
         return z, ys_in_pad
 

@@ -58,6 +58,7 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_causal,
         ctc,
         rnnt_decoder,
+        joint_memory_reduction: bool = False,
         ctc_weight: float = 0.5,
         rnnt_weight: float = 0.0,
         ctc_causal_weight: float = 0.0,
@@ -106,7 +107,7 @@ class ESPnetASRModel(AbsESPnetModel):
             self.criterion_trans = None
         else:
             self.rnnt_decoder = rnnt_decoder
-            self.criterion_trans = TransLoss("warp-rnnt", lamb,  blank_id)
+            self.criterion_trans = TransLoss("warp-rnnt", lamb, joint_memory_reduction, blank_id)
         self.criterion_att = LabelSmoothingLoss(
             size=vocab_size,
             padding_idx=ignore_id,
@@ -381,7 +382,7 @@ class ESPnetASRModel(AbsESPnetModel):
         
         
         decoder_out, _ = self.rnnt_decoder(
-            encoder_out, ys_in_pad, ys_mask
+            encoder_out, ys_in_pad, pred_len, target_len, ys_mask
         )
 
         # Calc RNNT loss

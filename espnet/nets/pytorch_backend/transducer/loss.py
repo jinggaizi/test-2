@@ -13,7 +13,7 @@ class TransLoss(torch.nn.Module):
         blank_id (int): blank symbol id
     """
 
-    def __init__(self, trans_type, lamb, blank_id):
+    def __init__(self, trans_type, lamb, joint_memory_reduction, blank_id):
         """Construct an TransLoss object."""
         super().__init__()
 
@@ -40,6 +40,7 @@ class TransLoss(torch.nn.Module):
         self.trans_type = trans_type
         self.blank_id = blank_id
         self.lamb = lamb
+        self.joint_memory_reduction = joint_memory_reduction
 
     def forward(self, pred_pad, target, pred_len, target_len):
         """Compute path-aware regularization transducer loss.
@@ -59,36 +60,47 @@ class TransLoss(torch.nn.Module):
         if dtype != torch.float32:
             # warp-transducer and warp-rnnt only support float32
             pred_pad = pred_pad.to(dtype=torch.float32)
-        if self.trans_type == "warp-rnnt":
-            # loss = torch.zeros(pred_pad.shape[0], device=pred_pad.device)
-            # for i in range(pred_pad.shape[0]):
-            #     pred_pad_per_utt = pred_pad[i].unsqueeze(0)
-            #     log_probs = torch.log_softmax(pred_pad_per_utt, dim=-1)
-            #     loss[i] = self.trans_loss(
-            #         log_probs,
-            #         target[i].unsqueeze(0),
-            #         pred_len[i],
-            #         target_len[i],
-            #         reduction="mean",
-            #         blank=self.blank_id,
-            #         gather=True,
-            #         # fastemit_lambda=self.lamb,
-            #     )
-            # loss = loss.mean()
+        if self.joint_memory_reduction:
+            batch = target.size(0)
+            loss = torch.zeros((1), dtype=torch.float32, device=pred_pad.device)
+            _start = 0
 
-            log_probs = torch.log_softmax(pred_pad, dim=-1)
-            loss = self.trans_loss(
-                log_probs,
-                target,
-                pred_len,
-                target_len,
-                reduction="mean",
-                blank=self.blank_id,
-                gather=True,
-                # fastemit_lambda=self.lamb,
-            )
+            for b in range(batch):
+                t = int(pred_len[b])
+                u = int(target_len[b])
+                t_u = t * (u + 1)
+
+                if self.trans_type == "warp-rnnt":
+                    log_probs = torch.log_softmax(
+                        pred_pad[_start : (_start + t_u), :].view(1, t, (u + 1), -1),
+                        dim=-1,
+                    )
+                loss += self.trans_loss(
+                        log_probs,
+                        target[b : (b + 1), :u],
+                        pred_len[b].unsqueeze(0),
+                        target_len[b].unsqueeze(0),
+                        reduction="mean",
+                        blank=self.blank_id,
+                        gather=True,
+                    )
+                _start += t_u
+            loss /= batch
         else:
-            loss = self.trans_loss(pred_pad, target, pred_len, target_len)
+            if self.trans_type == "warp-rnnt":
+                log_probs = torch.log_softmax(pred_pad, dim=-1)
+                loss = self.trans_loss(
+                    log_probs,
+                    target,
+                    pred_len,
+                    target_len,
+                    reduction="mean",
+                    blank=self.blank_id,
+                    gather=True,
+                    # fastemit_lambda=self.lamb,
+                )
+            else:
+                loss = self.trans_loss(pred_pad, target, pred_len, target_len)
         loss = loss.to(dtype=dtype)
         
         return loss
