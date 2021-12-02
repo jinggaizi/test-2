@@ -93,11 +93,11 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         use_non_causal_layer_decoding: bool = False,
         causal_weight: float = 0.3,
         decoding: bool = False,
-        decoding_chunk_length: int = 10, 
-        num_decoding_left_chunks: int = -1,
+        decoding_chunk_length: int = 10,
+        decoding_left_frames: int = 30,
+        decoding_right_frames: int = 0,
         simulate_streaming: bool = False,
         intermediate_causal: bool = False,
-    
     ):
         assert check_argument_types()
         super().__init__()
@@ -107,7 +107,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         if pos_enc_layer_type == "abs_pos":
             pos_enc_class = PositionalEncoding
         elif pos_enc_layer_type == "rel_pos":
-            assert selfattention_layer_type == "rel_selfattn" 
+            assert selfattention_layer_type == "rel_selfattn"
             pos_enc_class = RelPositionalEncoding
         else:
             raise ValueError("unknown pos_enc_layer: " + pos_enc_layer_type)
@@ -189,7 +189,8 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         self.decoding = decoding
         self.simulate_streaming = simulate_streaming
         self.decoding_chunk_length = decoding_chunk_length
-        self.num_decoding_left_chunks = num_decoding_left_chunks
+        self.decoding_left_frames = decoding_left_frames
+        self.decoding_right_frames = decoding_right_frames
         self.intermediate_causal = intermediate_causal
 
     def output_size(self) -> int:
@@ -219,7 +220,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         #pdb.set_trace()
         if self.decoding:
             if self.simulate_streaming:
-                xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, self.decoding_chunk_length, self.num_decoding_left_chunks)
+                xs_pad, pos_emb, masks = self.forward_chunk_by_chunk(xs_pad, self.decoding_chunk_length, self.decoding_left_frames, self.decoding_right_frames)
                 olens = masks.squeeze(1).sum(1)
                 olens = torch.ones(masks.squeeze(1).size(), dtype=olens.dtype, device=olens.device).sum(1)
                 if self.use_non_causal_layer_decoding == True:
@@ -255,7 +256,7 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                                               0,
                                               self.static_chunk_size,
                                               -1)
-       
+
         #pdb.set_trace()
         for layer in self.causal_encoders:
             xs_pad, chunk_masks, _,   = layer(xs_pad, chunk_masks, pos_emb, masks)
@@ -266,26 +267,27 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
             for layer in self.non_causal_encoders:
                 xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
             if self.normalize_before:
-               xs_pad = self.after_norm(xs_pad) 
+               xs_pad = self.after_norm(xs_pad)
             olens = masks.squeeze(1).sum(1)
-            return xs_pad, olens, xs_pad_causal       
+            return xs_pad, olens, xs_pad_causal
         else:
             random_val = torch.rand(1)
             if self.causal_weight < random_val:
                 for layer in self.non_causal_encoders:
                     xs_pad, masks, _ = layer(xs_pad, masks, pos_emb)
-        
+
             if self.normalize_before:
                 xs_pad = self.after_norm(xs_pad)
 
             olens = masks.squeeze(1).sum(1)
-            
+
             return xs_pad, olens, None
 
     def forward_chunk(
         self,
         xs: torch.Tensor,
         offset: int,
+        decoding_right_frames: int,
         required_cache_size: int,
         subsampling_cache: Optional[torch.Tensor] = None,
         elayers_output_cache: Optional[List[torch.Tensor]] = None,
@@ -331,15 +333,17 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         elif required_cache_size == 0:
             next_cache_start = xs.size(1)
         else:
-            next_cache_start = max(xs.size(1) - required_cache_size, 0)
-        r_subsampling_cache = xs[:, next_cache_start:, :]
+            next_cache_start = max(xs.size(1) - required_cache_size - decoding_right_frames, 0)
+        if decoding_right_frames == 0:
+            r_subsampling_cache = xs[:, next_cache_start:, :]
+        else:
+            r_subsampling_cache = xs[:, next_cache_start:-decoding_right_frames, :]
         # Real mask for transformer/conformer layers
         masks = torch.ones(1, xs.size(1), device=xs.device, dtype=torch.bool)
         masks = masks.unsqueeze(1)
         r_elayers_output_cache = []
         r_conformer_cnn_cache = []
-        import pdb
-        #pdb.set_trace()
+
         for i, layer in enumerate(self.causal_encoders):
             if elayers_output_cache is None:
                 attn_cache = None
@@ -353,26 +357,27 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
                                          masks,
                                          pos_emb,
                                          cache=attn_cache,
-                                         cnn_cache=cnn_cache)
-            r_elayers_output_cache.append(xs[:, next_cache_start:, :])
+                                         cnn_cache=cnn_cache,
+                                         decoding_right_frames=decoding_right_frames)
+            if decoding_right_frames == 0:
+                r_elayers_output_cache.append(xs[:, next_cache_start:, :])
+            else:
+                r_elayers_output_cache.append(xs[:, next_cache_start:-decoding_right_frames, :])
             r_conformer_cnn_cache.append(new_cnn_cache)
         if self.use_non_causal_layer_decoding == True:
             pass
         else:
             if self.normalize_before:
                 xs = self.after_norm(xs)
-        import pdb
-        #pdb.set_trace()
-
         return (xs[:, cache_size:, :], r_subsampling_cache,
                 r_elayers_output_cache, r_conformer_cnn_cache, pos_emb[:, cache_size:, :])
-    
+
     def forward_chunk_by_chunk(
         self,
         xs: torch.Tensor,
         decoding_chunk_length: int,
-        num_decoding_left_chunks: int = -1,
-        #num_decoding_right_chunks: int = 0,
+        decoding_left_frames: int = -1,
+        decoding_right_frames: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """ Forward input chunk by chunk with chunk_size like a streaming
             fashion
@@ -401,10 +406,11 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         assert decoding_chunk_length > 0
         # The model is trained by static or dynamic chunk
         #assert self.static_chunk_size > 0 or self.use_dynamic_chunk
+        #pdb.set_trace()
         subsampling = self.embed.subsampling_rate
         context = self.embed.right_context + 1  # Add current frame
         stride = subsampling * decoding_chunk_length
-        decoding_window = (decoding_chunk_length - 1) * subsampling + context
+        decoding_window = (decoding_chunk_length + decoding_right_frames - 1) * subsampling + context
         bs, num_frames, idim = xs.shape
         subsampling_cache: Optional[torch.Tensor] = None
         elayers_output_cache: Optional[List[torch.Tensor]] = None
@@ -412,19 +418,23 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         outputs = []
         outputs_pos = []
         offset = 0
-        required_cache_size = decoding_chunk_length * num_decoding_left_chunks
+        required_cache_size = decoding_left_frames
 
         # Feed forward overlap input step by step
-        for cur in range(0, num_frames - context + 1, stride):
+        for cur in range(0, max(num_frames - context + 1 - decoding_right_frames * subsampling, 1), stride):
             end = min(cur + decoding_window, num_frames)
             chunk_xs = xs[:, cur:end, :]
 
             (y, subsampling_cache, elayers_output_cache,
              conformer_cnn_cache, pos_emb) = self.forward_chunk(chunk_xs, offset,
+                                                       decoding_right_frames,
                                                        required_cache_size,
                                                        subsampling_cache,
                                                        elayers_output_cache,
                                                        conformer_cnn_cache)
+            if decoding_right_frames > 0 and end < num_frames:
+                y = y[:, :-decoding_right_frames, :]
+                pos_emb = pos_emb[:, :-decoding_right_frames, :]
             outputs.append(y)
             outputs_pos.append(pos_emb)
             offset += y.size(1)

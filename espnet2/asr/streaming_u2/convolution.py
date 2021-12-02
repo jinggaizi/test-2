@@ -83,6 +83,7 @@ class ConvolutionModule(nn.Module):
         x: torch.Tensor,
         mask_pad: Optional[torch.Tensor] = None,
         cache: Optional[torch.Tensor] = None,
+        decoding_right_frames: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute convolution module.
         Args:
@@ -108,7 +109,10 @@ class ConvolutionModule(nn.Module):
                 assert cache.size(1) == x.size(1)
                 x = torch.cat((cache, x), dim=2)
             assert (x.size(2) > self.lorder)
-            new_cache = x[:, :, -self.lorder:]
+            if decoding_right_frames > 0:
+                new_cache = x[:, :, -self.lorder-decoding_right_frames:-decoding_right_frames]
+            else:
+                new_cache = x[:, :, -self.lorder:]
         else:
             # It's better we just return None if no cache is requried,
             # However, for JIT export, here we just fake one tensor instead of

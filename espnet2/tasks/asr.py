@@ -122,7 +122,8 @@ decoder_choices = ClassChoices(
         rnn=RNNDecoder,
     ),
     type_check=AbsDecoder,
-    default="rnn",
+    default=None,
+    optional=True,
 )
 rnnt_decoder_choices = ClassChoices(
     "rnnt_decoder",
@@ -419,19 +420,21 @@ class ASRTask(AbsTask):
         encoder = encoder_class(input_size=input_size, **args.encoder_conf)
 
         # 6. Decoder
-        decoder_class = decoder_choices.get_class(args.decoder)
-        decoder = decoder_class(
-            vocab_size=vocab_size,
-            encoder_output_size=encoder.output_size(),
-            **args.decoder_conf,
-        )
+        decoder = None
         decoder_causal = None
-        if args.decoder_causal is not None:
-            decoder_causal = decoder_class(
+        if args.decoder is not None:
+            decoder_class = decoder_choices.get_class(args.decoder)
+            decoder = decoder_class(
                 vocab_size=vocab_size,
                 encoder_output_size=encoder.output_size(),
                 **args.decoder_conf,
             )
+            if args.decoder_causal is not None:
+                decoder_causal = decoder_class(
+                    vocab_size=vocab_size,
+                    encoder_output_size=encoder.output_size(),
+                    **args.decoder_conf,
+                )
 
         # 7. CTC
         ctc = CTC(

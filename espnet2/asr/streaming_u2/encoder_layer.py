@@ -80,7 +80,8 @@ class EncoderLayer(nn.Module):
                 pos_emb: torch.Tensor,
                 mask_pad=None,
                 cache=None,
-                cnn_cache=None):
+                cnn_cache=None,
+                decoding_right_frames=0):
         """Compute encoded features.
 
         Args:
@@ -136,7 +137,7 @@ class EncoderLayer(nn.Module):
             residual = x
             if self.normalize_before:
                 x = self.norm_conv(x)
-            x, new_cnn_cache = self.conv_module(x, mask_pad, cnn_cache)
+            x, new_cnn_cache = self.conv_module(x, mask_pad, cnn_cache, decoding_right_frames)
             x = residual + self.dropout(x)
             if not self.normalize_before:
                 x = self.norm_conv(x)
