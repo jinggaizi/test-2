@@ -423,6 +423,8 @@ class ConformerStreamingCascadedU2Encoder(AbsEncoder):
         # Feed forward overlap input step by step
         for cur in range(0, max(num_frames - context + 1 - decoding_right_frames * subsampling, 1), stride):
             end = min(cur + decoding_window, num_frames)
+            if end + subsampling > num_frames:
+                end = num_frames
             chunk_xs = xs[:, cur:end, :]
 
             (y, subsampling_cache, elayers_output_cache,
